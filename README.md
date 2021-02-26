@@ -14,13 +14,13 @@ Approach. It hopes to support ongoing work by
 scale flood forecasting and documents the technical methods presented in
 the in-review paper:
 
-> Johnson, J.M., et. al (2021) “*Characterizing Reach-level Empirical
-> Roughness Along the National Hydrography Network: Developing DEM-based
-> Synthetic Rating Curves.*”
+> Johnson, J.M., Eyelade D., Clarke K.C, Singh-Mohudpur, J. (2021)
+> “*Characterizing Reach-level Empirical Roughness Along the National
+> Hydrography Network: Developing DEM-based Synthetic Rating Curves.*”
 
 The gradient boosted machine approach used is documented
-[here](./docs/GBM-final.html), and the predictions can be accessed with
-the `USGS-nhdplusTools` package
+[here](https://mikejohnson51.github.io/nhd-roughness/GBM-final.html),
+and the predictions can be accessed with the `USGS-nhdplusTools` package
 
 ``` r
 install.packages("nhdplusTools")

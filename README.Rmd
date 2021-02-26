@@ -18,9 +18,9 @@ knitr::opts_chunk$set(
 
 This is an information based (no code) repository for describing the creation of NHD-level roughness estimates to support terrain based synthetic rating curves using the Height Above Nearest Drainage (HAND) Approach. It hopes to support ongoing work by [NOAA](https://github.com/NOAA-OWP/cahaba) for operational continental scale flood forecasting and documents the technical methods presented in the in-review paper:
 
-> Johnson, J.M., et. al (2021) "*Characterizing Reach-level Empirical Roughness Along the National Hydrography Network: Developing DEM-based Synthetic Rating Curves.*"
+> Johnson, J.M., Eyelade D., Clarke K.C, Singh-Mohudpur, J. (2021) "*Characterizing Reach-level Empirical Roughness Along the National Hydrography Network: Developing DEM-based Synthetic Rating Curves.*"
 
-The gradient boosted machine approach used is documented [here](./docs/GBM-final.html), and the predictions can be accessed with the `USGS-nhdplusTools` package
+The gradient boosted machine approach used is documented [here](https://mikejohnson51.github.io/nhd-roughness/GBM-final.html), and the predictions can be accessed with the `USGS-nhdplusTools` package
 
 ```{r, eval = FALSE}
 install.packages("nhdplusTools")
