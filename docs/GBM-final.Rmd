@@ -1,0 +1,661 @@
+---
+title: "GBM Modeling for SRCs"
+output:
+    rmarkdown::html_vignette:
+        toc: true
+vignette: >
+  %\VignetteIndexEntry{GBM Modeling for SRCs}
+  %\VignetteEngine{knitr::rmarkdown}
+  \usepackage[utf8]{inputenc}
+---
+
+
+This document outlines the Gradient Boosted Machine method used to estimate roughness along the National Hydrography Dataset (NHDPlus) as part of the in-review paper:
+
+> Johnson, J.M., et. al (2021) "*Characterizing Reach-level Empirical Roughness Along the National Hydrography Network: Developing DEM-based Synthetic Rating Curves.*"
+
+**Document Author**: Justin Singh-Mohudpur
+
+An example of the full Rscript will be shown at the bottom of this page.
+
+***
+
+# Training Options and Dependencies
+
+We begin by loading the necessary libraries, setting a couple training options,
+and beginning our parallel cluster (if used):
+
+```r
+library(dplyr)  # For concise data manipulation
+library(caret)  # For machine learning 
+
+# Training Options
+MODEL_NAME <- "example-gbm" # Model file name
+SEED       <- 182           # For reproducibility
+SAVE       <- TRUE          # Save model after training (T/F)?
+SAVE_DIR   <- "path/to/dir" # Directory to save model if SAVE is TRUE
+PARALLEL   <- TRUE          # Run training in parallel (T/F)?
+
+if (PARALLEL) {
+    cores <- parallel::detectCores()
+    cl    <- parallel::makeCluster(cores[1] - 1, outfile = "")
+    doParallel::registerDoParallel(cl)
+}
+```
+
+# Loading Data
+
+Now, we load the data that we will use for training and
+validation of our model. The `optimized_data` data set
+should include:
+
+- **optimized** roughness coefficients,
+- corresponding NHDPlus Common Identifiers.
+
+The **NHDPlus Value-Added Attributes (VAA)** data set will
+include our potential predictors. We can retrieve the VAA data set via the
+`nhdplusTools` package:
+
+```r
+optimized_data <- readRDS("path/to/data.rds")
+
+# Option 1: All of the VAAs
+# nhdplus_vaa <- nhdplusTools::get_vaa()
+
+# Option 2: Tested Predictors, with HUC 12-digit code for sampling
+nhdplus_vaa <- nhdplusTools::get_vaa(
+    atts = c("areasqkm", "lengthkm", "slope",
+             "pathlength", "arbolatesu", "reachcode")
+)
+```
+
+If you choose to redo the feature selection (choosing which predictors
+to use in your GBM model), then you can get the full VAA data set, as done above in *option 1*.
+Otherwise, if you want to select the tested attributes, you can call *option 2*.
+
+We also need to join these data sets together, using `dplyr`:
+
+```r
+modeling_data <- dplyr::left_join(
+    optimized_data,
+    nhdplus_vaa,
+    by = "comid"
+)
+```
+
+# Pre-Processing Data
+
+Now, in order to ensure that we mitigate bias and/or errors within our
+modeling, we need to **pre-process** our data.
+
+An example that may arise is a model's bias to specific HUC2 regions. To prevent this bias,
+we ensure our training set has *(as close to as possible)* uniform partitioning between all HUC2 regions.
+
+Moreover, if you've worked with the VAAs, you will know that there may be values that were required
+to be limited or set to *impossible* values (i.e. `pathtimema` may be set to the value -9999). We want to
+make sure that these values are filtered out of our training set, as to not create training bias.
+
+```r
+# Get the HUC 2-digit code from each HUC 12-digit code
+# for (as close to as possible) uniform partitioning.
+modeling_huc2 <- modeling_data %>%
+                 dplyr::mutate(
+                     huc2 = factor(substr(reachcode, start = 0, stop = 2))
+                 ) %>%
+                 tibble::as_tibble()
+
+# Split the data set into training
+# and validation sets by HUC2 regions.
+training_set   <- modeling_huc2 %>%
+                  group_by(huc2) %>%
+                  slice_head(n = 500) %>%
+                  ungroup()
+validation_set <- modeling_huc2 %>%
+                  dplyr::filter(!(comid %in% training_set$comid))
+
+# If you chose Option 2 for getting the VAAs, then 
+# we create a character vector of the predictors we want to
+# utilize, including the optimized roughness coefficients
+predictors <- c("optimized_roughness",
+                "areasqkm",
+                "lengthkm",
+                "slope",
+                "pathlength",
+                "arbolatesu")
+
+# We filter the training set with the above predictors (if used),
+# and remove rows with pathlength == 0 and slope <= 0.00001,
+# as this will create bias and/or errors in training. Then, we perform
+# a log transformation to center our data in the event that it is skewed
+training_tidied <- training_set[names(training_set) %in% predictors] %>%
+                   dplyr::filter(pathlength != 0, slope > 0.00001) %>%
+                   log() %>%
+                   na.omit() %>%
+                   dplyr::filter_all(all_vars(!is.infinite(.))) %>%
+                   tibble::as_tibble()
+```
+
+# Model Training
+
+Once our data is pre-processed, we are almost ready to being training
+the actual model (or begin feature selection in some cases). However,
+we want to ensure that we find the best **hyperparameters** for our 
+model. To do this, we craft a hyperparameter grid with all possible values
+for our model. Below, `gbm_grid` is an example of the hyperparameter grid used
+in the initial modeling for roughness coefficient generation.
+
+> Make sure to note that, **the choice of hyperparameters is important**,
+> as the wrong parameters may lead to under or overfitting. For example, in general
+> 40,000 trees is not common, however, in the case of SRCs, we saw through
+> validation that it did not cause overfitting, but worked better than having less iterations.
+> 
+> This will change depending on the GBM algorithm
+> (i.e. XGBoost or LightGBM hyperparameters will not necessarily be the same).
+
+We want to note that *too many* potential hyperparameters will lead to a
+*computationally expensive* training session, so if you are not training a model
+within HPC infrastructure, it's **recommended** that instead of performing 
+hyperparameter search with the below grid, that you split the grid into smaller
+chunks, with each training session funneling closer to the optimal hyperparameters
+(i.e. the general hyperparamter grid seen below).
+
+## Hyperparameter Grid and `caret` Controls
+
+```r
+# Hyperparameter grid (the whole grid)
+gbm_grid <- expand.grid(
+    interaction.depth = 1:15,
+    n.trees           = c(seq(500, 5000, 500), seq(10000, 40000, 5000)),
+    shrinkage         = c(0.001, seq(0.005, 0.1, 0.005)),
+    n.minobsinnode    = c(5, 10, 15)
+)
+
+# (More) general hyperparameter grid
+# gbm_grid <- expand.grid(
+#     interaction.depth = seq(1, 15, 2),
+#     n.trees           = seq(500, 40000, 5000),
+#     shrinkage         = seq(0.001, 0.1, length = 5),
+#     n.minobsinnode    = c(5, 10, 15)
+# )
+```
+
+In conjunction with our hyperparameter grid, we also need to
+specify our training control parameters. These parameters state the
+options for **validating** our model as it trains. There are two primary
+validation methods to consider: **bootstrapping** or **cross-validation**. 
+
+In the first example below, we choose the `optimism_boot` resampling method,
+which is the optimism bootstrap estimator detailed in
+[Efron and Tibshirani, 1994](https://books.google.com/books/about/An_Introduction_to_the_Bootstrap.html?id=gLlpIUxRntoC).
+
+On the other hand, in the second example we perform repeated 10-fold cross-validation. In general,
+cross-validation will perform better validation for our model, but is *much more* performance-heavy. So, if you are
+not working within HPC infrastructure, it's not recommended
+**unless you are performing your final modeling, and know the exact optimal hyperparameters for your model**.
+```r
+# Set training controls, this is an
+# example of bootstrapping. 
+controls <- caret::trainControl(
+    method = "optimism_boot",
+    number = 5,
+    verboseIter = TRUE
+)
+
+# If we wanted to perform, say, repeated 10-fold
+# cross-validation we could set our controls as such:
+# controls <- caret::trainControl(
+#     method = "repeatedcv",
+#     number = 10,
+#     repeats = 3,
+#     verboseIter = TRUE
+# )
+```
+
+For more information regarding hyperparameters and training controls, the `caret` package documentation
+has an excellent page on describing these, as well as visualizing results from chosen parameters:
+
+https://topepo.github.io/caret/model-training-and-tuning.html#custom
+
+## Starting Training
+
+With all of the prerequisites sorted, we can now begin the actual modeling. The
+`caret::train()` function is the focal point in performing this. Below is an example of
+how we can input our data, parameters, etc. into the training process.
+
+```r
+trained_model <- caret::train(
+    optimized_roughness ~ ., # Training formula: y ~ x
+    data = training_tidied,  # Training dataset
+    method = "gbm",          # Modeling method
+    trControl = controls,    # Training controls (specified above)
+    tuneGrid = gbm_grid,     # Hyperparameter grid (specified above)
+    na.action = "na.omit",   # Action to take with NA values
+    bag.fraction = 0.3       # bagging fraction (p)
+)
+
+if (SAVE) {
+    saveRDS(
+        trained_model,
+        file = paste0(SAVE_DIR, "/", MODEL_NAME, "-gbm.rds")
+    )
+}
+
+if (PARALLEL) doParallel::stopCluster(cl)
+```
+
+Once training is started, if `verboseIter = TRUE` in the training controls, we will see
+output within the console regarding the training. Note that depending on the hyperparameter grid
+and resampling/validation method, **training can take between a few minutes to a whole day**.
+
+# Model Validation
+
+To perform validation before final model validation, we perform predictions
+on our partioned testing dataset and capture the normalized RMSE between our
+predictions and optimized n values. We can perform this by calling the following
+function:
+
+```r
+perform_validation <- function(test_set, trained_model) {
+    predictors <- names(trained_model$trainingData)[-1]
+
+    test_data <- test_set %>%
+                 dplyr::select(predictors) %>%
+                 dplyr::relocate(predictors) %>%
+                 log() %>%
+                 na.omit() %>%
+                 tibble::as_tibble()
+    
+    test_predictions <- test_data %>%
+                        modelr::add_predictions(trained_model$finalModel)
+    
+    obs_sim <- cbind(test_data[[1]], exp(test_predictions)) %>%
+               tibble::as_tibble() %>%
+               dplyr::rename(obs = `test_data[[1]]`, sim = pred) %>%
+               dplyr::select(obs, sim)
+
+    hydroGOF::nrmse(
+        sim = obs_sim$sim,
+        obs = obs_sim$obs,
+        norm = "maxmin"
+    )
+}
+```
+
+> **Note**: The `perform_validation()` function assumes that the `test_set` data set
+> conforms to the same structure as the training set used for `trained_model`.
+
+## Final Model Validation
+
+To perform final model validation, we predict the roughness coefficient
+for each ComID in the 7155 observations we have, then, we compute
+the max-min nRMSEs comparing the recorded rating curve against the
+predicted synthetic rating curve. In order to do this, we add an
+additional Rscript, which we source if we set `COMPUTE_NRMSE` to
+`TRUE`, such that after our last line of code we place:
+
+```r
+if (COMPUTE_NRMSE) {
+    source("R/compute_nrmse.r")
+}
+```
+
+Then, our `compute_nrmse.r` script is as follows:
+
+```r
+library(hydroGOF) # For nRMSE function
+library(gbm)      # For loading GBM models from file
+
+#' @title Compute nRMSE Values
+#' @description Create a data frame of nRMSE values for each ComID
+#'              with respect to an actual RC and a predicted SRC.
+#' @param comid NHD ComID Character
+#' @param atr Single-row data frame of named predictors with corresponding values for a ComID
+#' @param flow Calculated flat tub flow
+#' @param rc Data frame containing the rating curve with columns: stage, flow
+#' @param model_name Character of the model name
+compute_values <- function(comid, atr, flow, rc, model_name) {
+    # Ensure attributes exist and there is only one row
+    if(nrow(atr) == 1) {
+        # Ensure predictors are in the correct order,
+        # REQUIRED for predictions with gbm package,
+        # otherwise, predictions will be incorrect.
+        predictors <- 
+            atr %>%
+            dplyr::select(
+                slope,
+                pathlength,
+                arbolatesu,
+                lengthkm,
+                areasqkm
+            ) %>%
+            dplyr::relocate(
+                pathlength,
+                arbolatesu,
+                lengthkm,
+                areasqkm,
+                slope
+            ) %>%
+            log()
+
+        predicted_n <- predict(ml_model$finalModel, predictors) %>%
+                          exp()
+
+        flow_scalar <- sqrt(atr$slope) / ((atr$lengthkm * 1000) * predicted_n)
+        simulated_flow <- flow_scalar * flow
+
+        nRMSE <- hydroGOF::nrmse(
+            sim  = simulated_flow,
+            obs  = rc$flow,
+            norm = "maxmin"
+        )
+    } else {
+      predicted_n <- NA
+      nRMSE <- NA
+    }
+
+    df <- data.frame(
+        model   = model_name,
+        comid   = comid,
+        nrmse   = nRMSE,
+        n       = predicted_n
+    )
+
+    df
+}
+
+# Parallelization
+if (PARALLEL) {
+    cores <- parallel::detectCores()
+    cl    <- parallel::makeCluster(cores[1] - 1, outfile = "")
+    doParallel::registerDoParallel(cl)
+}
+
+# Export libraries to cluster, used for pbmapply()
+clusterCall(cl, function() library(dplyr))
+clusterCall(cl, function() library(raster))
+clusterCall(cl, function() library(sf))
+clusterCall(cl, function() library(hydroGOF))
+
+# There is code to show how to generate this .rds, include?
+comid_data <- readRDS("data/roughness-comid-metadata.rds")
+
+# pbapply::pbmapply() calls mapply(), and displays a progress bar
+# Compute nRMSE and n terms for each COMID
+computed_ls <- pbapply::pbmapply(
+    FUN   = compute_values,
+    comid = comid_data[which(rownames(comid_data) == "comid"), ],
+    atr   = comid_data[which(rownames(comid_data) == "atts"), ],
+    flow  = comid_data[which(rownames(comid_data) == "flatFlow"), ],
+    rc    = comid_data[which(rownames(comid_data) == "rc"), ],
+    MoreArgs = list(model_name = MODEL_NAME)
+)
+
+# Transforms data from computed_ls to a tibble
+full_data <- tibble::tibble(
+    model = unlist(computed_ls[which(rownames(computed_ls) == "model"), ]),
+    comid = unlist(computed_ls[which(rownames(computed_ls) == "comid"), ]),
+    nrmse = unlist(computed_ls[which(rownames(computed_ls) == "nrmse"), ]),
+    n     = unlist(computed_ls[which(rownames(computed_ls) == "n"), ])
+)
+
+saveRDS(
+    full_data,
+    file = paste0(SAVE_DIR, "/", MODEL_NAME, "-validation.rds")
+)
+
+if (PARALLEL) doParallel::stopCluster(cl)
+```
+
+# Computing CONUS Predictions
+
+In the event that you want to make predictions for all ~2.7 million river reaches in CONUS,
+we lay out an example function that allows you to pass the `caret` prediction model as an argument,
+and return a tibble of predictions for all ComIDs.
+
+```r
+get_conus_predictions <- function(prediction_model) {
+
+    cores <- parallel::detectCores()
+    cl    <- parallel::makeCluster(cores[1] - 1, outfile = "")
+    doParallel::registerDoParallel(cl)
+
+    library(gbm)
+    library(magrittr)
+
+    conus      <- nhdplusTools::get_vaa()
+    predictors <- names(prediction_model$trainingData)[-1]
+    attrs      <- dplyr::select(conus, comid, predictors) %>%
+                  dplyr::relocate(comid, predictors)
+    attrs[-1]  <- log(attrs[-1])
+    baseline   <- attrs %>%
+                  tibble::as_tibble() %>%
+                  na.omit()
+
+    baseline_preds <- modelr::add_predictions(
+        baseline[, -1],
+        prediction_model$finalModel
+    )
+
+    prediction <- cbind(baseline[[1]], exp(baseline_preds)) %>%
+                  tibble::as_tibble() %>%
+                  dplyr::rename(comid = `baseline[[1]]`, n = pred) %>%
+                  dplyr::select(comid, n)
+
+    parallel::stopCluster(cl)
+
+    prediction
+}
+```
+
+***
+
+# Full Script Example
+
+```r
+#' @title Compute nRMSE Values
+#' @description Create a data frame of nRMSE values for each ComID
+#'              with respect to an actual RC and a predicted SRC.
+#' @param comid NHD ComID Character
+#' @param atr Single-row data frame of named predictors with corresponding values for a ComID
+#' @param flow Calculated flat tub flow
+#' @param rc Data frame containing the rating curve with columns: stage, flow
+#' @param model_name Character of the model name
+compute_values <- function(comid, atr, flow, rc, model_name) {
+    # Ensure attributes exist and there is only one row
+    if(nrow(atr) == 1) {
+        # Ensure predictors are in the correct order,
+        # REQUIRED for predictions with gbm package,
+        # otherwise, predictions will be incorrect.
+        predictors <- 
+            atr %>%
+            dplyr::select(
+                slope,
+                pathlength,
+                arbolatesu,
+                lengthkm,
+                areasqkm
+            ) %>%
+            dplyr::relocate(
+                pathlength,
+                arbolatesu,
+                lengthkm,
+                areasqkm,
+                slope
+            ) %>%
+            log()
+
+        predicted_n <- predict(ml_model$finalModel, predictors) %>%
+                          exp()
+
+        flow_scalar <- sqrt(atr$slope) / ((atr$lengthkm * 1000) * predicted_n)
+        simulated_flow <- flow_scalar * flow
+
+        nRMSE <- hydroGOF::nrmse(
+            sim  = simulated_flow,
+            obs  = rc$flow,
+            norm = "maxmin"
+        )
+    } else {
+      predicted_n <- NA
+      nRMSE <- NA
+    }
+
+    df <- data.frame(
+        model   = model_name,
+        comid   = comid,
+        nrmse   = nRMSE,
+        n       = predicted_n
+    )
+
+    df
+}
+
+library(dplyr)    # For concise data manipulation
+library(caret)    # For machine learning
+library(hydroGOF) # For nRMSE function
+library(gbm)      # For loading GBM models from file
+
+# Training Options
+MODEL_NAME <- "example-gbm" # Model file name
+SEED       <- 182           # For reproducibility
+SAVE       <- TRUE          # Save model after training (T/F)?
+SAVE_DIR   <- "path/to/dir" # Directory to save model if SAVE is TRUE
+PARALLEL   <- TRUE          # Run training in parallel (T/F)?
+
+if (PARALLEL) {
+    cores <- parallel::detectCores()
+    cl    <- parallel::makeCluster(cores[1] - 1, outfile = "")
+    doParallel::registerDoParallel(cl)
+}
+
+optimized_data <- readRDS("path/to/data.rds")
+
+# Option 2: Tested Predictors, with HUC 12-digit code for sampling
+nhdplus_vaa <- nhdplusTools::get_vaa(
+    atts = c("areasqkm", "lengthkm", "slope",
+             "pathlength", "arbolatesu", "reachcode")
+)
+
+modeling_data <- dplyr::left_join(
+    optimized_data,
+    nhdplus_vaa,
+    by = "comid"
+)
+
+# Get the HUC 2-digit code from each HUC 12-digit code
+# for (as close to as possible) uniform partitioning.
+modeling_huc2 <- modeling_data %>%
+                 dplyr::mutate(
+                     huc2 = factor(substr(reachcode, start = 0, stop = 2))
+                 ) %>%
+                 tibble::as_tibble()
+
+# Split the data set into training
+# and validation sets by HUC2 regions.
+training_set   <- modeling_huc2 %>%
+                  group_by(huc2) %>%
+                  slice_head(n = 500) %>%
+                  ungroup()
+validation_set <- modeling_huc2 %>%
+                  dplyr::filter(!(comid %in% training_set$comid))
+
+# If you chose Option 2 for getting the VAAs, then 
+# we create a character vector of the predictors we want to
+# utilize, including the optimized roughness coefficients
+predictors <- c("optimized_roughness",
+                "areasqkm",
+                "lengthkm",
+                "slope",
+                "pathlength",
+                "arbolatesu")
+
+# We filter the training set with the above predictors (if used),
+# and remove rows with pathlength == 0 and slope <= 0.00001,
+# as this will create bias and/or errors in training. Then, we perform
+# a log transformation to center our data in the event that it is skewed
+training_tidied <- training_set[names(training_set) %in% predictors] %>%
+                   dplyr::filter(pathlength != 0, slope > 0.00001) %>%
+                   log() %>%
+                   na.omit() %>%
+                   dplyr::filter_all(all_vars(!is.infinite(.))) %>%
+                   tibble::as_tibble()
+
+# Hyperparameter grid
+gbm_grid <- expand.grid(
+    interaction.depth = 1:15,
+    n.trees           = c(seq(500, 5000, 500), seq(10000, 40000, 5000)),
+    shrinkage         = c(0.001, seq(0.005, 0.1, 0.005)),
+    n.minobsinnode    = c(5, 10, 15)
+)
+
+# Set training controls, this is an
+# example of bootstrapping. 
+controls <- caret::trainControl(
+    method = "optimism_boot",
+    number = 5,
+    verboseIter = TRUE
+)
+
+trained_model <- caret::train(
+    optimized_roughness ~ .,
+    data = training_tidied,
+    method = "gbm",
+    trControl = controls,
+    tuneGrid = gbm_grid,
+    na.action = "na.omit",
+    bag.fraction = 0.3
+)
+
+if (SAVE) {
+    saveRDS(
+        trained_model,
+        file = paste0(SAVE_DIR, "/", MODEL_NAME, "-gbm.rds")
+    )
+}
+
+if (PARALLEL) doParallel::stopCluster(cl)
+
+if (COMPUTE_NRMSE) {
+    # Parallelization
+    if (PARALLEL) {
+        cores <- parallel::detectCores()
+        cl    <- parallel::makeCluster(cores[1] - 1, outfile = "")
+        doParallel::registerDoParallel(cl)
+    }
+
+    # Export libraries to cluster, used for pbmapply()
+    clusterCall(cl, function() library(dplyr))
+    clusterCall(cl, function() library(raster))
+    clusterCall(cl, function() library(sf))
+    clusterCall(cl, function() library(hydroGOF))
+
+    # There is code to show how to generate this .rds, include?
+    comid_data <- readRDS("data/roughness-comid-metadata.rds")
+
+    # pbapply::pbmapply() calls mapply(), and displays a progress bar
+    # Compute nRMSE and n terms for each COMID
+    computed_ls <- pbapply::pbmapply(
+        FUN   = compute_values,
+        comid = comid_data[which(rownames(comid_data) == "comid"), ],
+        atr   = comid_data[which(rownames(comid_data) == "atts"), ],
+        flow  = comid_data[which(rownames(comid_data) == "flatFlow"), ],
+        rc    = comid_data[which(rownames(comid_data) == "rc"), ],
+        MoreArgs = list(model_name = MODEL_NAME)
+    )
+
+    # Transforms data from computed_ls to a tibble
+    full_data <- tibble::tibble(
+        model = unlist(computed_ls[which(rownames(computed_ls) == "model"), ]),
+        comid = unlist(computed_ls[which(rownames(computed_ls) == "comid"), ]),
+        nrmse = unlist(computed_ls[which(rownames(computed_ls) == "nrmse"), ]),
+        n     = unlist(computed_ls[which(rownames(computed_ls) == "n"), ])
+    )
+
+    saveRDS(
+        full_data,
+        file = paste0(SAVE_DIR, "/", MODEL_NAME, "-validation.rds")
+    )
+
+    if (PARALLEL) doParallel::stopCluster(cl)
+}
+```
