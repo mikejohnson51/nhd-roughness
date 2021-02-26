@@ -29,14 +29,15 @@ install.packages("nhdplusTools")
 ```{r}
 library(nhdplusTools)
 
-roughness = get_vaa("slope")
-head(roughness)
+roughness = get_vaa("roughness")
+
+tail(roughness)
 ```
 
 
 ### Background
 
-In the first iteration of the NFIE, and the following Continental Flood Inundation Mapping framework (CFIM), a global roughness value of 0.05 was used for all NHDPlus reaches. Zheng, Tarboton, et al. (2018) found a global roughness produced SRCs with variable accuracy, but that accurate depth estimates could be achieved for the Tar River Watershed by calibrating roughness to a streamflow-stage relation produced from HEC-RAS modeling. Zheng, Maidment, et al., (2018) implemented the HAND approach with a LiDAR based DEM, calling the approach ‘GeoFlood’. This approach proved capable of capturing the Federal Emergency Management Agency flood plain coverage with 60–90% accuracy but was dependent on adjusting the Manning's n value. As part of that work, the authors highlighted that extreme sensitivity of SRC estimates to even small variations in roughness. 
+In the first iteration of the NFIE, and the following [Continental Flood Inundation Mapping framework (CFIM)](https://cfim.ornl.gov/data/), a global roughness value of 0.05 was used for all NHDPlus reaches. Zheng, Tarboton, et al. (2018) found a global roughness produced SRCs with variable accuracy, but that accurate depth estimates could be achieved for the Tar River Watershed by calibrating roughness to a streamflow-stage relation produced from HEC-RAS modeling. Zheng, Maidment, et al., (2018) implemented the HAND approach with a LiDAR based DEM, calling the approach ‘GeoFlood’. This approach proved capable of capturing the Federal Emergency Management Agency flood plain coverage with 60–90% accuracy but was dependent on adjusting the Manning's n value. As part of that work, the authors highlighted that extreme sensitivity of SRC estimates to even small variations in roughness. 
 
 Other studies have evaluated the skill of SRCs indirectly by comparing HAND-based inundation maps to remotely sensed flood products or aerial imagery (Garousi‐Nejad et al., 2019; Johnson et al., 2019). *In these studies, the assignment of roughness was also identified as the principal limiting factor in accurate flood prediction and the success of the continental flood mapping framework.* It is promising that in most cases, it appears roughness can be calibrated to achieve accurate results while the downside is that this requirement removes the primary advantage of the SRCs approach, namely its applicability across large scales and in ungauged basins.
 

@@ -30,32 +30,34 @@ install.packages("nhdplusTools")
 library(nhdplusTools)
 #> USGS Support Package: https://owi.usgs.gov/R/packages.html#support
 
-roughness = get_vaa("slope")
-head(roughness)
-#>     comid      slope
-#> 1 8318793 0.06083397
-#> 2 8318787 0.09534391
-#> 3 8318775 0.11273792
-#> 4 8318785 0.15142342
-#> 5 8318789 0.16246142
-#> 6 8318801 0.10504926
+roughness = get_vaa("roughness")
+
+tail(roughness)
+#>             comid roughness
+#> 2691334    209993    0.3170
+#> 2691335    210053    0.1003
+#> 2691336    210055    0.1122
+#> 2691337    210057    0.1245
+#> 2691338 942110021    0.1437
+#> 2691339 942110034    0.1236
 ```
 
 ### Background
 
-In the first iteration of the NFIE, and the following Continental Flood
-Inundation Mapping framework (CFIM), a global roughness value of 0.05
-was used for all NHDPlus reaches. Zheng, Tarboton, et al. (2018) found a
-global roughness produced SRCs with variable accuracy, but that accurate
-depth estimates could be achieved for the Tar River Watershed by
-calibrating roughness to a streamflow-stage relation produced from
-HEC-RAS modeling. Zheng, Maidment, et al., (2018) implemented the HAND
-approach with a LiDAR based DEM, calling the approach ‘GeoFlood’. This
-approach proved capable of capturing the Federal Emergency Management
-Agency flood plain coverage with 60–90% accuracy but was dependent on
-adjusting the Manning’s n value. As part of that work, the authors
-highlighted that extreme sensitivity of SRC estimates to even small
-variations in roughness.
+In the first iteration of the NFIE, and the following [Continental Flood
+Inundation Mapping framework (CFIM)](https://cfim.ornl.gov/data/), a
+global roughness value of 0.05 was used for all NHDPlus reaches. Zheng,
+Tarboton, et al. (2018) found a global roughness produced SRCs with
+variable accuracy, but that accurate depth estimates could be achieved
+for the Tar River Watershed by calibrating roughness to a
+streamflow-stage relation produced from HEC-RAS modeling. Zheng,
+Maidment, et al., (2018) implemented the HAND approach with a LiDAR
+based DEM, calling the approach ‘GeoFlood’. This approach proved capable
+of capturing the Federal Emergency Management Agency flood plain
+coverage with 60–90% accuracy but was dependent on adjusting the
+Manning’s n value. As part of that work, the authors highlighted that
+extreme sensitivity of SRC estimates to even small variations in
+roughness.
 
 Other studies have evaluated the skill of SRCs indirectly by comparing
 HAND-based inundation maps to remotely sensed flood products or aerial
