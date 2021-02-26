@@ -1,0 +1,97 @@
+
+<!-- README.md is generated from README.Rmd. Please edit that file -->
+
+# nhd-roughness
+
+<!-- badges: start -->
+<!-- badges: end -->
+
+This is an information based (no code) repository for describing the
+creation of NHD-level roughness estimates to support terrain based
+synthetic rating curves using the Height Above Nearest Drainage (HAND)
+Approach. It hopes to support ongoing work by
+[NOAA](https://github.com/NOAA-OWP/cahaba) for operational continental
+scale flood forecasting and documents the technical methods presented in
+the in-review paper:
+
+> Johnson, J.M., et. al (2021) “*Characterizing Reach-level Empirical
+> Roughness Along the National Hydrography Network: Developing DEM-based
+> Synthetic Rating Curves.*”
+
+The gradient boosted machine approach used is documented
+[here](./docs/GBM-final.html), and the predictions can be accessed with
+the `USGS-nhdplusTools` package
+
+``` r
+install.packages("nhdplusTools")
+```
+
+``` r
+library(nhdplusTools)
+#> USGS Support Package: https://owi.usgs.gov/R/packages.html#support
+
+roughness = get_vaa("slope")
+head(roughness)
+#>     comid      slope
+#> 1 8318793 0.06083397
+#> 2 8318787 0.09534391
+#> 3 8318775 0.11273792
+#> 4 8318785 0.15142342
+#> 5 8318789 0.16246142
+#> 6 8318801 0.10504926
+```
+
+### Background
+
+In the first iteration of the NFIE, and the following Continental Flood
+Inundation Mapping framework (CFIM), a global roughness value of 0.05
+was used for all NHDPlus reaches. Zheng, Tarboton, et al. (2018) found a
+global roughness produced SRCs with variable accuracy, but that accurate
+depth estimates could be achieved for the Tar River Watershed by
+calibrating roughness to a streamflow-stage relation produced from
+HEC-RAS modeling. Zheng, Maidment, et al., (2018) implemented the HAND
+approach with a LiDAR based DEM, calling the approach ‘GeoFlood’. This
+approach proved capable of capturing the Federal Emergency Management
+Agency flood plain coverage with 60–90% accuracy but was dependent on
+adjusting the Manning’s n value. As part of that work, the authors
+highlighted that extreme sensitivity of SRC estimates to even small
+variations in roughness.
+
+Other studies have evaluated the skill of SRCs indirectly by comparing
+HAND-based inundation maps to remotely sensed flood products or aerial
+imagery (Garousi‐Nejad et al., 2019; Johnson et al., 2019). *In these
+studies, the assignment of roughness was also identified as the
+principal limiting factor in accurate flood prediction and the success
+of the continental flood mapping framework.* It is promising that in
+most cases, it appears roughness can be calibrated to achieve accurate
+results while the downside is that this requirement removes the primary
+advantage of the SRCs approach, namely its applicability across large
+scales and in ungauged basins.
+
+Our objective in this work is to define a national set of reach-level
+empirical roughness values suitable to theoretical rating curve
+techniques that can support ongoing efforts to improve operational flood
+prediction and activities relaying on estimated roughness.
+
+### Citations
+
+Zheng, X., Tarboton, D. G., Maidment, D. R., Liu, Y. Y., & Passalacqua,
+P. (2018). River Channel Geometry and Rating Curve Estimation Using
+Height above the Nearest Drainage. JAWRA Journal of the American Water
+Resources Association, 54(4), 785–806.
+<https://doi.org/10.1111/1752-1688.12661>
+
+Zheng, X., Maidment, D. R., Tarboton, D. G., Liu, Y. Y., & Passalacqua,
+P. (2018). GeoFlood: Large-Scale Flood Inundation Mapping Based on
+High-Resolution Terrain Analysis. Water Resources Research, 54(12),
+10,013-10,033. <https://doi.org/10.1029/2018WR023457>
+
+Johnson, J. M., Munasinghe, D., Eyelade, D., & Cohen, S. (2019). An
+Integrated Evaluation of the National Water Model (NWM) Height Above
+Nearest Drainage (HAND) Flood Mapping Methodology.
+<https://doi.org/10.5194/nhess-19-2405-2019>
+
+Garousi‐Nejad, Irene, et al. “Terrain analysis enhancements to the
+height above nearest drainage flood inundation mapping method.” Water
+Resources Research 55.10 (2019): 7983-8009.
+<https://doi.org/10.1029/2019WR024837>
